@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torrent Streaming</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #video { width: 100%; height: auto; margin-top: 20px; }
+        input[type="text"], input[type="password"] { width: calc(100% - 100px); padding: 10px; margin-right: 10px; }
+        button { padding: 10px; }
+        select { padding: 10px; margin-top: 10px; }
+        #error { color: red; }
+        #loading { 
+            display: none; 
+            font-size: 20px; 
+            margin-top: 20px; 
+            text-align: center; 
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 5px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <h1>Torrent Streaming</h1>
+    
+    <!-- Registration Form -->
+    <h2>Register</h2>
+    <input type="text" id="registerUsername" placeholder="Username">
+    <input type="password" id="registerPassword" placeholder="Password">
+    <button id="registerButton">Register</button>
+
+    <h2>Login</h2>
+    <input type="text" id="loginUsername" placeholder="Username">
+    <input type="password" id="loginPassword" placeholder="Password">
+    <button id="loginButton">Login</button>
+
+    <h2>Stream Torrent</h2>
+    <input type="text" id="torrentInput" placeholder="Enter torrent/magnet link">
+    <button id="streamButton">Stream</button>
+    
+    <br><br>
+    
+    <input type="file" id="torrentFileInput" accept=".torrent" />
+    <button id="uploadButton">Upload Torrent File</button>
+    
+    <div id="error"></div>
+    <select id="fileSelect" style="display:none;"></select>
+    <div id="loading">Loading<span class="spinner"></span></div>
+    <video id="video" controls></video>
+
+    <h2>Previously Streamed Torrents</h2>
+    <ul id="streamedTorrentsList"></ul>
+
+    <script src="https://cdn.jsdelivr.net/npm/webtorrent/webtorrent.min.js"></script>
+    <script>
+        const client = new WebTorrent();
+        const video = document.getElementById('video');
+        const errorDiv = document.getElementById('error');
+        const fileSelect = document.getElementById('fileSelect');
+        const loadingDiv = document.getElementById('loading');
+        const streamedTorrentsList = document.getElementById('streamedTorrentsList');
+        let accessToken = '';
+
+        // Load user preferences
+        function loadPreferences() {
+            fetch('/api/preferences', {
+                headers: { 'x-access-token': accessToken }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.lastTorrent) {
+                    document.getElementById('torrentInput').value = data.lastTorrent;
+                }
+            });
+        }
+
+        // Load previously streamed torrents
+        function loadStreamedTorrents() {
+            fetch('/api/streamed-torrents', {
+                headers: { 'x-access-token': accessToken }
+            })
+            .then(response => response.json())
+            .then(streamedTorrents => {
+                streamedTorrents.forEach(torrent => {
+                    const listItem = document.createElement('li');
+                    listItem.textContent = `${torrent.torrent_id} (streamed at ${new Date(torrent.streamed_at).toLocaleString()})`;
+                    streamedTorrentsList.appendChild(listItem);
+                });
+            });
+        }
+
+        // Register a new user
+        document.getElementById('registerButton').onclick = function() {
+            const username = document.getElementById('registerUsername').value;
+            const password = document.getElementById('registerPassword').value;
+
+            fetch('/api/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ username, password }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.message) {
+                    alert(data.message);
+                }
+            })
+            .catch(err => {
+                console.error('Error registering:', err);
+                errorDiv.textContent = 'Error registering user.';
+            });
+        };
+
+        // Login user
+        document.getElementById('loginButton').onclick = function() {
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+
+            fetch('/api/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ username, password }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.accessToken) {
+                    accessToken = data.accessToken; // Store token
+                    alert('Login successful!');
+                    loadPreferences(); // Load user preferences
+                    loadStreamedTorrents(); // Load streamed torrents
+                } else {
+                    errorDiv.textContent = data.message || 'Login failed.';
+                }
+            })
+            .catch(err => {
+                console.error('Error logging in:', err);
+                errorDiv.textContent = 'Error logging in.';
+            });
+        };
+
+        // Stream torrent by ID
+        function streamTorrent(torrentId) {
+            loadingDiv.style.display = 'block'; // Show loading indicator
+            client.add(torrentId, function(torrent) {
+                // Clear any previous options
+                fileSelect.innerHTML = '';
+
+                // Populate the file selection dropdown with only video files
+                const videoFiles = torrent.files.filter(file => {
+                    return ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv'].some(ext => file.name.toLowerCase().endsWith(ext));
+                });
+
+                videoFiles.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file.name;
+                    option.textContent = file.name;
+                    fileSelect.appendChild(option);
+                });
+
+                // Show file selection dropdown if there are video files
+                if (videoFiles.length > 1) {
+                    fileSelect.style.display = 'block';
+                } else if (videoFiles.length === 1) {
+                    streamFile(videoFiles[0]);
+                } else {
+                    errorDiv.textContent = 'No video files found in the torrent.';
+                    loadingDiv.style.display = 'none'; // Hide loading indicator
+                }
+
+                // Handle file selection change
+                fileSelect.onchange = function() {
+                    const selectedFile = videoFiles.find(file => file.name === fileSelect.value);
+                    streamFile(selectedFile);
+                };
+
+                // Hide loading indicator when the torrent is ready to stream
+                torrent.on('ready', function() {
+                    loadingDiv.style.display = 'none';
+                    saveTorrentPreference(torrentId); // Save the current torrent as a preference
+                });
+            });
+
+            // Handle errors
+            client.on('error', function(err) {
+                loadingDiv.style.display = 'none'; // Hide loading indicator
+                errorDiv.textContent = 'Error: ' + err.message;
+            });
+        }
+
+        // Stream file
+        function streamFile(file) {
+            if (!file) return;
+            // Start rendering the selected file to the video element
+            file.renderTo(video, {
+                autoplay: true
+            });
+        }
+
+        // Stream magnet link
+        document.getElementById('streamButton').onclick = function() {
+            const torrentId = document.getElementById('torrentInput').value;
+            errorDiv.textContent = ''; // Clear previous error messages
+            fileSelect.style.display = 'none'; // Hide file selection dropdown
+            video.src = ''; // Clear video source
+            streamTorrent(torrentId);
+        };
+
+        // Upload and stream torrent file
+        document.getElementById('uploadButton').onclick = function() {
+            const fileInput = document.getElementById('torrentFileInput');
+            if (fileInput.files.length === 0) {
+                errorDiv.textContent = 'Please select a torrent file to upload.';
+                return;
+            }
+
+            const torrentFile = fileInput.files[0];
+            const fileReader = new FileReader();
+
+            fileReader.onload = function(event) {
+                const torrentBuffer = event.target.result;
+                streamTorrent(torrentBuffer);
+            };
+
+            fileReader.readAsArrayBuffer(torrentFile); // Read the file as an ArrayBuffer
+        };
+
+        // Save torrent preference
+        function saveTorrentPreference(torrentId) {
+            fetch('/api/preferences', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-access-token': accessToken // Include token in header
+                },
+                body: JSON.stringify({ lastTorrent: torrentId }),
+            }).catch(err => {
+                console.error('Error saving preference:', err);
+            });
+
+            saveStreamedTorrent(torrentId);
+        }
+
+        // Save streamed torrent
+        function saveStreamedTorrent(torrentId) {
+            fetch('/api/streamed-torrents', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-access-token': accessToken // Include token in header
+                },
+                body: JSON.stringify({ torrentId }),
+            }).catch(err => {
+                console.error('Error saving streamed torrent:', err);
+            });
+        }
+    </script>
+</body>
+</html>
